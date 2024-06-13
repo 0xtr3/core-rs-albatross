@@ -117,6 +117,7 @@ impl RequestCommon for RequestMacroChain {
     const TYPE_ID: u16 = 200;
     type Response = Result<MacroChain, MacroChainError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_MACRO_CHAIN;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -130,6 +131,7 @@ impl RequestCommon for RequestBatchSet {
     const TYPE_ID: u16 = 202;
     type Response = Result<BatchSetInfo, BatchSetError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_BATCH_SET;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -207,6 +209,7 @@ impl RequestCommon for RequestHistoryChunk {
     const TYPE_ID: u16 = 204;
     type Response = Result<HistoryChunk, HistoryChunkError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_HISTORY_CHUNK;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 #[cfg(feature = "full")]
@@ -257,6 +260,7 @@ impl RequestCommon for RequestBlock {
     const TYPE_ID: u16 = 207;
     type Response = Result<Block, BlockError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_BLOCK;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 test_max_req_size!(
     RequestBlock,
@@ -345,6 +349,7 @@ impl RequestCommon for RequestMissingBlocks {
     const TYPE_ID: u16 = 209;
     type Response = Result<ResponseBlocks, ResponseBlocksError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_MISSING_BLOCKS;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 /// Request the current blockchain head block hash.
@@ -363,6 +368,7 @@ impl RequestCommon for RequestHead {
     const TYPE_ID: u16 = 210;
     type Response = ResponseHead;
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_HEAD;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 test_max_req_size!(RequestHead, request_head_req_size, request_head_resp_size);
 
@@ -404,6 +410,7 @@ impl RequestCommon for RequestTransactionsProof {
     const TYPE_ID: u16 = 213;
     type Response = Result<ResponseTransactionsProof, ResponseTransactionProofError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_TRANSACTIONS_PROOF;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -417,6 +424,7 @@ impl RequestCommon for RequestTransactionReceiptsByAddress {
     const TYPE_ID: u16 = 214;
     type Response = ResponseTransactionReceiptsByAddress;
     const MAX_REQUESTS: u32 = MAX_REQUEST_TRANSACTIONS_BY_ADDRESS;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 #[derive(Serialize, Deserialize)]
@@ -437,6 +445,7 @@ impl RequestCommon for RequestTrieProof {
     const TYPE_ID: u16 = 215;
     type Response = Result<ResponseTrieProof, ResponseTrieProofError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_TRIE_PROOF;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 /// Response to [`RequestTrieProof`].
@@ -482,6 +491,7 @@ impl RequestCommon for RequestBlocksProof {
     const TYPE_ID: u16 = 216;
     type Response = Result<ResponseBlocksProof, ResponseBlocksProofError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_BLOCKS_PROOF;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 /// Operations supported for the transaction address subscription
@@ -508,6 +518,7 @@ impl RequestCommon for RequestSubscribeToAddress {
     const TYPE_ID: u16 = 217;
     type Response = Result<(), SubscribeToAddressesError>;
     const MAX_REQUESTS: u32 = MAX_REQUEST_SUBSCRIBE_BY_ADDRESS;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 /// Different kind of events that could generate notifications

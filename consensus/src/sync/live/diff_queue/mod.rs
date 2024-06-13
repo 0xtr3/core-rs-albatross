@@ -58,6 +58,7 @@ impl RequestCommon for RequestTrieDiff {
     type Response = ResponseTrieDiff;
 
     const MAX_REQUESTS: u32 = MAX_REQUEST_RESPONSE_TRIE_DIFFS;
+    const CHANNEL_RESPONSE_SIZE: u16 = 100;
 }
 
 pub enum QueuedDiff<N: Network> {
