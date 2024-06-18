@@ -58,6 +58,9 @@ impl Policy {
     /// The maximum allowed size, in bytes, for a micro block body.
     pub const MAX_SIZE_MICRO_BODY: usize = 100_000;
 
+    /// Define the maximum lengths for transaction sender_data and recipient_data fields.
+    pub const MAX_TX_SENDER_RECIPIENT_DATA_SIZE: usize = 800;
+
     /// The current version number of the protocol. Changing this always results in a hard fork.
     pub const VERSION: u16 = 1;
 
