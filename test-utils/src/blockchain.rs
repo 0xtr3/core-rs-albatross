@@ -81,12 +81,14 @@ pub fn produce_macro_blocks_with_txns(
 
         let blockchain = blockchain.upgradable_read();
 
-        let macro_block_proposal = producer.next_macro_block_proposal(
-            &blockchain,
-            blockchain.head().timestamp() + Policy::BLOCK_SEPARATION_TIME,
-            0u32,
-            vec![],
-        );
+        let macro_block_proposal = producer
+            .next_macro_block_proposal(
+                &blockchain,
+                blockchain.head().timestamp() + Policy::BLOCK_SEPARATION_TIME,
+                0u32,
+                vec![],
+            )
+            .unwrap();
 
         let block = sign_macro_block(
             &producer.voting_key,
@@ -141,14 +143,16 @@ pub fn fill_micro_blocks_with_txns(
             rng_seed,
         );
         let start = Instant::now();
-        let last_micro_block = producer.next_micro_block(
-            &blockchain,
-            blockchain.head().timestamp() + Policy::BLOCK_SEPARATION_TIME,
-            vec![],
-            txns,
-            vec![0x42],
-            None,
-        );
+        let last_micro_block = producer
+            .next_micro_block(
+                &blockchain,
+                blockchain.head().timestamp() + Policy::BLOCK_SEPARATION_TIME,
+                vec![],
+                txns,
+                vec![0x42],
+                None,
+            )
+            .unwrap();
         let duration = start.elapsed();
         log::debug!(
             "   Time elapsed producing micro: {} ms, ",
