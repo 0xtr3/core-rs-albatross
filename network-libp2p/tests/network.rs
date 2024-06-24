@@ -432,7 +432,7 @@ async fn dht_put_and_get() {
 }
 
 #[test(tokio::test)]
-async fn ban_peer() {
+async fn ban_and_unban_peer() {
     let (net1, net2) = create_connected_networks().await;
 
     assert!(net2.has_peer(*net1.local_peer_id()));
@@ -457,6 +457,13 @@ async fn ban_peer() {
 
     // We shouldn't have any peer since the last connection shouldn't have succeeded.
     assert_eq!(net2.get_peers(), &[]);
+
+    // We unban the peer
+    net2.unban_peer(net1_peer_id).await;
+
+    // We try to dial again since we got unbanned so we should be able to establish a connection
+    net1.dial_peer(net2_peer_id).await.unwrap();
+    assert!(net1.has_peer(net2_peer_id));
 }
 
 pub struct TestTopic;
