@@ -142,8 +142,7 @@ pub enum BlockAdditionalFields {
         interlink: Option<Vec<Blake2bHash>>,
         #[serde(skip_serializing_if = "Option::is_none")]
         slots: Option<Vec<Slots>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        next_batch_initial_punished_set: Option<BitSet>,
+        next_batch_initial_punished_set: BitSet,
 
         #[serde(skip_serializing_if = "Option::is_none")]
         justification: Option<TendermintProof>,
@@ -169,11 +168,6 @@ impl Block {
         let block_number = macro_block.block_number();
 
         let slots = macro_block.get_validators().map(Slots::from_slots);
-
-        let next_batch_initial_punished_set = match macro_block.body.clone() {
-            None => None,
-            Some(body) => Some(body.next_batch_initial_punished_set),
-        };
 
         // Get the reward inherents and convert them to reward transactions.
         let mut transactions = None;
@@ -227,7 +221,7 @@ impl Block {
                 parent_election_hash: macro_block.header.parent_election_hash,
                 interlink: macro_block.header.interlink,
                 slots,
-                next_batch_initial_punished_set,
+                next_batch_initial_punished_set: macro_block.header.next_batch_initial_punished_set,
                 justification: macro_block.justification.map(TendermintProof::from),
             },
         })
