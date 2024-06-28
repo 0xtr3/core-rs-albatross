@@ -2,8 +2,12 @@ use std::{cmp, ops::Range};
 
 use nimiq_block::MicroBlock;
 use nimiq_database::{
-    traits::{Database, ReadCursor, ReadTransaction, WriteCursor, WriteTransaction},
-    DatabaseProxy, TableFlags, TableProxy, TransactionProxy, WriteTransactionProxy,
+    declare_table,
+    mdbx::{MdbxDatabase, MdbxReadTransaction, MdbxWriteTransaction, OptionalTransaction},
+    traits::{
+        Database, DupReadCursor, DupWriteCursor, ReadCursor, ReadTransaction, WriteCursor,
+        WriteTransaction,
+    },
 };
 use nimiq_genesis::NetworkId;
 use nimiq_hash::{Blake2bHash, Hash};
@@ -20,7 +24,9 @@ use nimiq_mmr::{
 use nimiq_primitives::policy::Policy;
 use nimiq_serde::Serialize;
 use nimiq_transaction::{
-    historic_transaction::{EquivocationEvent, HistoricTransaction, HistoricTransactionData},
+    historic_transaction::{
+        EquivocationEvent, HistoricTransaction, HistoricTransactionData, RawTransactionHash,
+    },
     history_proof::HistoryTreeProof,
     inherent::Inherent,
     EquivocationLocator,
@@ -31,6 +37,13 @@ use super::{
 };
 use crate::history::{mmr_store::MMRStore, HistoryTreeChunk};
 
+// `u32` (epoch number) -> `IndexedHash` (`node_index || Blake2bHash`)
+declare_table!(HistoryTreeTable, "HistoryTrees", u32 => u32 => Blake2bHash);
+// `u32` (epoch number) -> `IndexedTransaction` (`leaf_index || HistoricTransaction`)
+declare_table!(HistoricTransactionTable, "HistoricTransactions", u32 => u32 => HistoricTransaction);
+// `u32` -> `u32`
+declare_table!(LastLeafTable, "LastLeafIndexesByBlock", u32 => u32);
+
 /// A struct that contains databases to store history trees (which are Merkle Mountain Ranges
 /// constructed from the list of historic transactions in an epoch) and historic transactions (which
 /// are representations of transactions).
@@ -38,13 +51,13 @@ use crate::history::{mmr_store::MMRStore, HistoryTreeChunk};
 /// only has macro block headers) that that given transaction happened.
 pub struct HistoryStore {
     /// Database handle.
-    db: DatabaseProxy,
+    db: MdbxDatabase,
     /// A database of all history trees indexed by their epoch number.
-    hist_tree_table: TableProxy,
+    hist_tree_table: HistoryTreeTable,
     /// A database of all historic transactions indexed by their epoch number and leaf index.
-    pub(super) hist_tx_table: TableProxy,
+    pub(super) hist_tx_table: HistoricTransactionTable,
     /// A database of the last leaf index for each block number.
-    last_leaf_table: TableProxy,
+    last_leaf_table: LastLeafTable,
 
     /// The validity store is used by nodes to keep track of which
     /// transactions have occurred within the validity window.
@@ -55,34 +68,22 @@ pub struct HistoryStore {
 }
 
 impl HistoryStore {
-    /// `u32` (epoch number) -> `IndexedHash` (`node_index || Blake2bHash`)
-    const HIST_TREE_DB_NAME: &'static str = "HistoryTrees";
-    /// `u32` (epoch number) -> `IndexedTransaction` (`leaf_index || HistoricTransaction`)
-    const HIST_TX_DB_NAME: &'static str = "HistoricTransactions";
-    /// `u32` -> `u32`
-    const LAST_LEAF_DB_NAME: &'static str = "LastLeafIndexesByBlock";
-
     /// Creates a new HistoryStore.
-    pub fn new(db: DatabaseProxy, network_id: NetworkId) -> Self {
-        let hist_tree_table = db.open_table_with_flags(
-            Self::HIST_TREE_DB_NAME.to_string(),
-            TableFlags::UINT_KEYS | TableFlags::DUPLICATE_KEYS | TableFlags::DUP_FIXED_SIZE_VALUES,
-        );
-        let hist_tx_table = db.open_table_with_flags(
-            Self::HIST_TX_DB_NAME.to_string(),
-            TableFlags::UINT_KEYS | TableFlags::DUPLICATE_KEYS,
-        );
-        let last_leaf_table =
-            db.open_table_with_flags(Self::LAST_LEAF_DB_NAME.to_string(), TableFlags::UINT_KEYS);
-
-        HistoryStore {
+    pub fn new(db: MdbxDatabase, network_id: NetworkId) -> Self {
+        let store = HistoryStore {
             validity_store: ValidityStore::new(db.clone()),
             db,
-            hist_tree_table,
-            hist_tx_table,
-            last_leaf_table,
             network_id,
-        }
+            hist_tree_table: HistoryTreeTable,
+            hist_tx_table: HistoricTransactionTable,
+            last_leaf_table: LastLeafTable,
+        };
+
+        store.db.create_dup_table(&store.hist_tree_table);
+        store.db.create_dup_table(&store.hist_tx_table);
+        store.db.create_regular_table(&store.last_leaf_table);
+
+        store
     }
 
     /// Gets an historic transaction by its hash. Note that this hash is the leaf hash (see MMRHash)
@@ -91,64 +92,37 @@ impl HistoryStore {
         &self,
         epoch_number: u32,
         leaf_index: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Option<HistoricTransaction> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
-        let mut cursor = txn.cursor(&self.hist_tx_table);
-        let key = IndexedTransaction::empty(leaf_index);
-        let (_, epoch, value) = cursor.seek_range_subkey(&epoch_number, &key)?;
-        if epoch != epoch_number || value.index != leaf_index {
-            return None;
-        }
-        Some(value.value.value())
+        let mut cursor = txn.dup_cursor(&self.hist_tx_table);
+        let value = cursor.set_subkey(&epoch_number, &leaf_index)?;
+        Some(value.value)
     }
 
     fn get_historic_txns(
         &self,
         epoch_number: u32,
         leaf_indices: Range<u32>,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Vec<HistoricTransaction> {
         let mut hist_txs = Vec::with_capacity((leaf_indices.end - leaf_indices.start) as usize);
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get consecutive transactions with fast cursor.
-        let mut cursor = txn.cursor(&self.hist_tx_table);
+        let mut cursor = txn.dup_cursor(&self.hist_tx_table);
 
         for (i, leaf_index) in (leaf_indices.start..leaf_indices.end).enumerate() {
             let (epoch, hist_tx) = if i == 0 {
-                let key = IndexedTransaction::empty(leaf_indices.start);
-                cursor
-                    .seek_range_subkey(&epoch_number, &key)
-                    .map(|(_, k, v)| {
-                        (
-                            k,
-                            IndexedTransaction {
-                                index: v.index,
-                                value: v.value.value(),
-                            },
-                        )
-                    })
-                    .expect("Transaction not found")
+                (
+                    epoch_number,
+                    cursor
+                        .set_subkey(&epoch_number, &leaf_index)
+                        .expect("Transaction not found"),
+                )
             } else {
-                cursor
-                    .next_duplicate::<u32, IndexedTransaction>()
-                    .expect("Transaction not found")
+                cursor.next_duplicate().expect("Transaction not found")
             };
 
             assert_eq!(epoch, epoch_number, "Epoch number mismatch");
@@ -163,7 +137,7 @@ impl HistoryStore {
     /// Returns the root and leaf indices.
     pub(crate) fn remove_leaves_from_history(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         epoch_number: u32,
         limit: Option<usize>,
     ) -> Option<(Blake2bHash, Range<u32>)> {
@@ -197,30 +171,21 @@ impl HistoryStore {
 
     pub(crate) fn remove_txns_from_history(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         epoch_number: u32,
         leaf_indices: Range<u32>,
     ) -> u64 {
         let mut txns_size = 0u64;
 
-        let mut cursor = WriteTransaction::cursor(txn, &self.hist_tx_table);
+        let mut cursor = WriteTransaction::dup_cursor(txn, &self.hist_tx_table);
 
         for (i, leaf_index) in leaf_indices.rev().enumerate() {
             let tx_opt: Option<IndexedTransaction> = if i == 0 {
-                let key = IndexedTransaction::empty(leaf_index);
-                cursor
-                    .seek_range_subkey(&epoch_number, &key)
-                    .map(|(_, k, v)| {
-                        assert_eq!(k, epoch_number, "Invalid epoch number");
-                        IndexedTransaction {
-                            index: v.index,
-                            value: v.value.value(),
-                        }
-                    })
+                cursor.set_subkey(&epoch_number, &leaf_index)
             } else {
                 // The entries should be consecutive in the database,
                 // so we can just call next() without seeking.
-                cursor.prev_duplicate::<u32, _>().map(|(k, v)| {
+                cursor.prev_duplicate().map(|(k, v)| {
                     assert_eq!(epoch_number, k, "Invalid order of leaf indices");
                     v
                 })
@@ -253,7 +218,7 @@ impl HistoryStore {
 
     pub(crate) fn remove_epoch_from_history(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         epoch_number: u32,
     ) {
         // Fast removal of all transactions.
@@ -261,14 +226,14 @@ impl HistoryStore {
 
         let mut cursor = WriteTransaction::cursor(txn, &self.last_leaf_table);
         let Some((mut block_number, _value)) =
-            cursor.seek_range_key::<u32, u32>(&Policy::first_block_of(epoch_number).unwrap())
+            cursor.set_lowerbound_key(&Policy::first_block_of(epoch_number).unwrap())
         else {
             return;
         };
 
         while Policy::epoch_at(block_number) == epoch_number {
             cursor.remove();
-            let Some((block, _value)) = cursor.next::<u32, u32>() else {
+            let Some((block, _value)) = cursor.next() else {
                 return;
             };
             block_number = block;
@@ -282,21 +247,14 @@ impl HistoryStore {
         epoch_number: u32,
         leaf_indices: Vec<usize>,
         verifier_state: Option<usize>,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Option<HistoryTreeProof> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
@@ -308,7 +266,7 @@ impl HistoryStore {
 
         for i in &leaf_indices {
             hist_txs.push(
-                self.get_historic_tx(epoch_number, *i as u32, Some(txn))
+                self.get_historic_tx(epoch_number, *i as u32, Some(&txn))
                     .unwrap(),
             );
         }
@@ -324,21 +282,14 @@ impl HistoryStore {
     pub(crate) fn get_indexes_for_block(
         &self,
         block_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> (u32, u32) {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Seek to the last leaf index of the block, if it exists.
         let mut cursor = txn.cursor(&self.last_leaf_table);
 
-        let end = match cursor.seek_key::<u32, u32>(&block_number) {
+        let end = match cursor.set_key(&block_number) {
             // If the block number doesn't exist in the database that's because it doesn't contain
             // any transactions or inherents. So we terminate here.
             None => return (0, 0),
@@ -352,7 +303,7 @@ impl HistoryStore {
             0
         } else {
             // Otherwise, seek to the last leaf index of the previous block in the database.
-            match cursor.prev::<u32, u32>() {
+            match cursor.prev() {
                 // If it doesn't exist, then we have to start at zero.
                 None => 0,
                 Some((n, i)) => {
@@ -387,7 +338,7 @@ impl HistoryStore {
     /// Internal function for `add_to_history`, which also returns leaf indices.
     pub(crate) fn put_historic_txns(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         block_number: u32,
         hist_txs: &[HistoricTransaction],
     ) -> Option<(Blake2bHash, u64, Vec<u32>)> {
@@ -413,7 +364,7 @@ impl HistoryStore {
 
         // Add the historic transactions into the respective database.
         // We need to do this separately due to the borrowing rules of Rust.
-        let mut cursor = WriteTransaction::cursor(txn, &self.hist_tx_table);
+        let mut cursor = WriteTransaction::dup_cursor(txn, &self.hist_tx_table);
         for (hist_tx, &leaf_index) in hist_txs.iter().zip(leaf_idx.iter()) {
             assert!(
                 hist_tx.block_number <= block_number
@@ -429,11 +380,8 @@ impl HistoryStore {
             };
             cursor.append_dup(&epoch_number, &value);
 
-            self.validity_store.add_transaction(
-                txn,
-                hist_tx.block_number,
-                hist_tx.tx_hash().into(),
-            );
+            self.validity_store
+                .add_transaction(txn, hist_tx.block_number, hist_tx.tx_hash());
 
             txn.put(&self.last_leaf_table, &hist_tx.block_number, &leaf_index);
 
@@ -448,34 +396,27 @@ impl HistoryStore {
 }
 
 impl HistoryInterface for HistoryStore {
-    fn clear(&self, txn: &mut WriteTransactionProxy) {
-        txn.clear_database(&self.hist_tree_table);
-        txn.clear_database(&self.hist_tx_table);
-        txn.clear_database(&self.last_leaf_table);
+    fn clear(&self, txn: &mut MdbxWriteTransaction) {
+        txn.clear_table(&self.hist_tree_table);
+        txn.clear_table(&self.hist_tx_table);
+        txn.clear_table(&self.last_leaf_table);
     }
 
     /// Returns the length (i.e. the number of leaves) of the History Tree at a given block height.
     /// Note that this returns the number of leaves for only the epoch of the given block height,
     /// this is because we have separate History Trees for separate epochs.
-    fn length_at(&self, block_number: u32, txn_option: Option<&TransactionProxy>) -> u32 {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+    fn length_at(&self, block_number: u32, txn_option: Option<&MdbxReadTransaction>) -> u32 {
+        let txn = txn_option.or_new(&self.db);
 
         let mut cursor = txn.cursor(&self.last_leaf_table);
 
         // Seek to the last leaf index of the block, if it exists.
-        match cursor.seek_range_key::<u32, u32>(&block_number) {
+        match cursor.set_lowerbound_key(&block_number) {
             // If it exists, we simply get the last leaf index for the block. We increment by 1
             // because the leaf index is 0-based and we want the number of leaves.
             Some((n, i)) if n == block_number => i + 1,
             // Otherwise, seek to the previous block, if it exists.
-            _ => match cursor.prev::<u32, u32>() {
+            _ => match cursor.prev() {
                 // If it exists, we also need to check if the previous block is in the same epoch.
                 Some((n, i)) => {
                     if Policy::epoch_at(n) == Policy::epoch_at(block_number) {
@@ -496,20 +437,13 @@ impl HistoryInterface for HistoryStore {
     fn total_len_at_epoch(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> usize {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
@@ -526,7 +460,7 @@ impl HistoryInterface for HistoryStore {
     /// This method will fail if we try to push transactions from previous epochs.
     fn add_to_history(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         block_number: u32,
         hist_txs: &[HistoricTransaction],
     ) -> Option<(Blake2bHash, u64)> {
@@ -538,7 +472,7 @@ impl HistoryInterface for HistoryStore {
     /// of the resulting tree and the total size of the transactions removed.
     fn remove_partial_history(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         epoch_number: u32,
         num_hist_txs: usize,
     ) -> Option<(Blake2bHash, u64)> {
@@ -555,7 +489,7 @@ impl HistoryInterface for HistoryStore {
 
     /// Removes an existing history tree and all the historic transactions that were part of it.
     /// Returns None if there's no history tree corresponding to the given epoch number.
-    fn remove_history(&self, txn: &mut WriteTransactionProxy, epoch_number: u32) -> Option<()> {
+    fn remove_history(&self, txn: &mut MdbxWriteTransaction, epoch_number: u32) -> Option<()> {
         self.remove_leaves_from_history(txn, epoch_number, None)?;
         self.remove_epoch_from_history(txn, epoch_number);
 
@@ -566,21 +500,14 @@ impl HistoryInterface for HistoryStore {
     fn get_history_tree_root(
         &self,
         block_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Option<Blake2bHash> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get the history tree.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             Policy::epoch_at(block_number),
         ));
 
@@ -590,8 +517,8 @@ impl HistoryInterface for HistoryStore {
 
     fn tx_in_validity_window(
         &self,
-        raw_tx_hash: &Blake2bHash,
-        txn_opt: Option<&TransactionProxy>,
+        raw_tx_hash: &RawTransactionHash,
+        txn_opt: Option<&MdbxReadTransaction>,
     ) -> bool {
         self.validity_store.has_transaction(txn_opt, raw_tx_hash)
     }
@@ -601,70 +528,49 @@ impl HistoryInterface for HistoryStore {
     fn get_block_transactions(
         &self,
         block_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Vec<HistoricTransaction> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get the history tree.
         let epoch_number = Policy::epoch_at(block_number);
 
         // Get the range of leaf indexes at this height.
-        let (start, end) = self.get_indexes_for_block(block_number, Some(txn));
+        let (start, end) = self.get_indexes_for_block(block_number, Some(&txn));
 
-        self.get_historic_txns(epoch_number, start..end, Some(txn))
+        self.get_historic_txns(epoch_number, start..end, Some(&txn))
     }
 
     /// Gets all historic transactions for a given epoch.
     fn get_epoch_transactions(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Vec<HistoricTransaction> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
-        self.get_historic_txns(epoch_number, 0..tree.num_leaves() as u32, Some(txn))
+        self.get_historic_txns(epoch_number, 0..tree.num_leaves() as u32, Some(&txn))
     }
 
     /// Returns the number of historic transactions for a given epoch.
     fn num_epoch_transactions(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> usize {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
@@ -675,7 +581,7 @@ impl HistoryInterface for HistoryStore {
     fn get_final_epoch_transactions(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Vec<HistoricTransaction> {
         let end = self.get_number_final_epoch_transactions(epoch_number, txn_option) as u32;
 
@@ -688,21 +594,14 @@ impl HistoryInterface for HistoryStore {
     fn get_number_final_epoch_transactions(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> usize {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
@@ -714,7 +613,7 @@ impl HistoryInterface for HistoryStore {
 
         // Find the number of the last macro stored for the given epoch.
         let last_tx = self
-            .get_historic_tx(epoch_number, (num_leaves - 1) as u32, Some(txn))
+            .get_historic_tx(epoch_number, (num_leaves - 1) as u32, Some(&txn))
             .unwrap();
         let last_macro_block = Policy::last_macro_block(last_tx.block_number);
 
@@ -727,7 +626,7 @@ impl HistoryInterface for HistoryStore {
             let mut block_number = last_macro_block;
             let mut end = 0;
             loop {
-                let (block_start, block_end) = self.get_indexes_for_block(block_number, Some(txn));
+                let (block_start, block_end) = self.get_indexes_for_block(block_number, Some(&txn));
                 // If start != end, this is the last block that contained finalized transactions.
                 if block_start != block_end {
                     end = block_end;
@@ -749,21 +648,14 @@ impl HistoryInterface for HistoryStore {
     fn get_nonfinal_epoch_transactions(
         &self,
         epoch_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Vec<HistoricTransaction> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
@@ -775,7 +667,7 @@ impl HistoryInterface for HistoryStore {
 
         // Find the block number of the last macro stored for the given epoch.
         let last_tx = self
-            .get_historic_tx(epoch_number, (num_leaves - 1) as u32, Some(txn))
+            .get_historic_tx(epoch_number, (num_leaves - 1) as u32, Some(&txn))
             .unwrap();
         let last_macro_block = Policy::last_macro_block(last_tx.block_number);
 
@@ -789,7 +681,7 @@ impl HistoryInterface for HistoryStore {
             let mut block_number = last_macro_block;
             let mut nonfinal_start = 0;
             loop {
-                let (start, end) = self.get_indexes_for_block(block_number, Some(txn));
+                let (start, end) = self.get_indexes_for_block(block_number, Some(&txn));
                 // If start != end, this is the last block that contained finalized transactions.
                 if start != end {
                     nonfinal_start = end;
@@ -804,7 +696,7 @@ impl HistoryInterface for HistoryStore {
             cmp::min(nonfinal_start + 1, num_leaves as u32)
         };
 
-        self.get_historic_txns(epoch_number, nonfinal_start..num_leaves as u32, Some(txn))
+        self.get_historic_txns(epoch_number, nonfinal_start..num_leaves as u32, Some(&txn))
     }
 
     /// Returns the `chunk_index`th chunk of size `chunk_size` for a given epoch.
@@ -819,26 +711,19 @@ impl HistoryInterface for HistoryStore {
         verifier_block_number: u32,
         chunk_size: usize,
         chunk_index: usize,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Option<HistoryTreeChunk> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get history tree for given epoch.
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
         // Calculate number of nodes in the verifier's history tree.
-        let leaf_count = self.length_at(verifier_block_number, Some(txn)) as usize;
+        let leaf_count = self.length_at(verifier_block_number, Some(&txn)) as usize;
         let number_of_nodes = leaf_number_to_index(leaf_count);
 
         // Calculate chunk boundaries.
@@ -853,7 +738,7 @@ impl HistoryInterface for HistoryStore {
             .ok()?;
 
         // Get each historic transaction from the tree.
-        let hist_txs = self.get_historic_txns(epoch_number, start as u32..end as u32, Some(txn));
+        let hist_txs = self.get_historic_txns(epoch_number, start as u32..end as u32, Some(&txn));
 
         Some(HistoryTreeChunk {
             proof,
@@ -866,7 +751,7 @@ impl HistoryInterface for HistoryStore {
         &self,
         epoch_number: u32,
         chunks: Vec<(Vec<HistoricTransaction>, RangeProof<Blake2bHash>)>,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
     ) -> Result<Blake2bHash, MMRError> {
         // Get partial history tree for given epoch.
         let mut tree = PartialMerkleMountainRange::new(MMRStore::with_write_transaction(
@@ -891,7 +776,7 @@ impl HistoryInterface for HistoryStore {
 
         let root = tree.get_root()?;
 
-        let mut cursor = WriteTransaction::cursor(txn, &self.hist_tx_table);
+        let mut cursor = WriteTransaction::dup_cursor(txn, &self.hist_tx_table);
         // Then add all transactions to the database as the tree is finished.
         for (leaf_index, hist_tx) in all_leaves.iter().enumerate() {
             let value = IndexedTransaction {
@@ -900,11 +785,8 @@ impl HistoryInterface for HistoryStore {
             };
             cursor.append(&epoch_number, &value);
 
-            self.validity_store.add_transaction(
-                txn,
-                hist_tx.block_number,
-                hist_tx.tx_hash().into(),
-            );
+            self.validity_store
+                .add_transaction(txn, hist_tx.block_number, hist_tx.tx_hash());
 
             txn.put(
                 &self.last_leaf_table,
@@ -917,19 +799,12 @@ impl HistoryInterface for HistoryStore {
     }
 
     /// Returns the block number of the last leaf in the history store
-    fn get_last_leaf_block_number(&self, txn_option: Option<&TransactionProxy>) -> Option<u32> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+    fn get_last_leaf_block_number(&self, txn_option: Option<&MdbxReadTransaction>) -> Option<u32> {
+        let txn = txn_option.or_new(&self.db);
 
         // Seek to the last leaf index of the block, if it exists.
         let mut cursor = txn.cursor(&self.last_leaf_table);
-        cursor.last::<u32, u32>().map(|(key, _)| key)
+        cursor.last().map(|(key, _)| key)
     }
 
     /// Check whether an equivocation proof at a given equivocation locator has
@@ -937,38 +812,33 @@ impl HistoryInterface for HistoryStore {
     fn has_equivocation_proof(
         &self,
         locator: EquivocationLocator,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> bool {
-        let hash = HistoricTransactionData::Equivocation(EquivocationEvent { locator }).hash();
+        let hash = HistoricTransactionData::Equivocation(EquivocationEvent { locator })
+            .hash::<Blake2bHash>()
+            .into();
         self.validity_store.has_transaction(txn_option, &hash)
     }
 
     fn prove_num_leaves(
         &self,
         block_number: u32,
-        txn_option: Option<&TransactionProxy>,
+        txn_option: Option<&MdbxReadTransaction>,
     ) -> Result<SizeProof<Blake2bHash, HistoricTransaction>, MMRError> {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+        let txn = txn_option.or_new(&self.db);
 
         // Get the history tree.
         let epoch_number = Policy::epoch_at(block_number);
         let tree = MerkleMountainRange::new(MMRStore::with_read_transaction(
             &self.hist_tree_table,
-            txn,
+            &txn,
             epoch_number,
         ));
 
         let f = |leaf_index| self.get_historic_tx(epoch_number, leaf_index as u32, txn_option);
 
         // Calculate number of nodes in the verifier's history tree.
-        let leaf_count = self.length_at(block_number, Some(txn)) as usize;
+        let leaf_count = self.length_at(block_number, Some(&txn)) as usize;
         let number_of_nodes = leaf_number_to_index(leaf_count);
 
         tree.prove_num_leaves(f, Some(number_of_nodes))
@@ -976,7 +846,7 @@ impl HistoryInterface for HistoryStore {
 
     fn add_block(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         block: &nimiq_block::Block,
         inherents: Vec<Inherent>,
     ) -> Option<(Blake2bHash, u64)> {
@@ -1021,7 +891,7 @@ impl HistoryInterface for HistoryStore {
 
     fn remove_block(
         &self,
-        txn: &mut WriteTransactionProxy,
+        txn: &mut MdbxWriteTransaction,
         block: &MicroBlock,
         inherents: Vec<Inherent>,
     ) -> Option<u64> {
@@ -1048,20 +918,13 @@ impl HistoryInterface for HistoryStore {
         Some(total_size)
     }
 
-    fn history_store_range(&self, txn_option: Option<&TransactionProxy>) -> (u32, u32) {
-        let read_txn: TransactionProxy;
-        let txn = match txn_option {
-            Some(txn) => txn,
-            None => {
-                read_txn = self.db.read_transaction();
-                &read_txn
-            }
-        };
+    fn history_store_range(&self, txn_option: Option<&MdbxReadTransaction>) -> (u32, u32) {
+        let txn = txn_option.or_new(&self.db);
 
         let mut cursor = txn.cursor(&self.last_leaf_table);
 
-        let first = cursor.first::<u32, u32>().unwrap_or_default().0;
-        let last = cursor.last::<u32, u32>().unwrap_or_default().0;
+        let first = cursor.first().unwrap_or_default().0;
+        let last = cursor.last().unwrap_or_default().0;
 
         (first, last)
     }
@@ -1069,7 +932,7 @@ impl HistoryInterface for HistoryStore {
 
 #[cfg(test)]
 mod tests {
-    use nimiq_database::volatile::VolatileDatabase;
+    use nimiq_database::mdbx::{DatabaseConfig, MdbxDatabase};
     use nimiq_keys::Address;
     use nimiq_primitives::{coin::Coin, networks::NetworkId};
     use nimiq_test_log::test;
@@ -1083,7 +946,11 @@ mod tests {
     #[test]
     fn prove_num_leaves_works() {
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         let mut txn = env.write_transaction();
@@ -1168,7 +1035,11 @@ mod tests {
     #[test]
     fn length_at_works() {
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1196,7 +1067,11 @@ mod tests {
     #[test]
     fn transaction_in_validity_window_works() {
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1264,7 +1139,11 @@ mod tests {
     #[test]
     fn get_root_from_hist_txs_works() {
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1293,7 +1172,11 @@ mod tests {
     fn get_block_transactions_works() {
         let genesis_block_number = Policy::genesis_block_number();
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1453,7 +1336,11 @@ mod tests {
     fn get_epoch_transactions_works() {
         let genesis_block_number = Policy::genesis_block_number();
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1557,7 +1444,11 @@ mod tests {
     #[test]
     fn get_num_historic_transactions_works() {
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
 
         // Create historic transactions.
@@ -1586,7 +1477,11 @@ mod tests {
     fn get_indexes_for_block_works() {
         let genesis_block_number = Policy::genesis_block_number();
         // Initialize History Store.
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let history_store = HistoryStore::new(env.clone(), NetworkId::UnitAlbatross);
         let mut txn = env.write_transaction();
 

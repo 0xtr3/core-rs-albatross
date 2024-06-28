@@ -15,7 +15,7 @@ use nimiq_consensus::{
         syncer_proxy::SyncerProxy,
     },
 };
-use nimiq_database::volatile::VolatileDatabase;
+use nimiq_database::mdbx::{DatabaseConfig, MdbxDatabase};
 use nimiq_genesis::NetworkId;
 use nimiq_network_interface::network::Network as NetworkInterface;
 use nimiq_network_libp2p::Network;
@@ -174,7 +174,11 @@ async fn sync_ingredients() {
 
     // Setup first peer.
     let time = Arc::new(OffsetTime::new());
-    let env1 = VolatileDatabase::new(20).unwrap();
+    let env1 = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain1 = Arc::new(RwLock::new(
         Blockchain::new(
             env1.clone(),
@@ -219,7 +223,11 @@ async fn sync_ingredients() {
     );
 
     // Setup second peer (not synced yet).
-    let env2 = VolatileDatabase::new(20).unwrap();
+    let env2 = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let time = Arc::new(OffsetTime::new());
     let blockchain2 = Arc::new(RwLock::new(
         Blockchain::new(

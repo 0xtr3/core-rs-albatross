@@ -1,7 +1,7 @@
 use std::{borrow::Cow, char, convert::From, fmt, io, iter::Iterator, str::FromStr};
 
 use hex::FromHex;
-use nimiq_database_value::{AsDatabaseBytes, FromDatabaseValue};
+use nimiq_database_value::{AsDatabaseBytes, FromDatabaseBytes};
 use nimiq_hash::{hash_typed_array, Blake2bHash, Blake2bHasher, Hasher};
 use nimiq_macros::create_typed_array;
 use thiserror::Error;
@@ -209,17 +209,19 @@ impl fmt::Debug for Address {
 }
 
 impl AsDatabaseBytes for Address {
-    fn as_database_bytes(&self) -> Cow<[u8]> {
+    fn as_key_bytes(&self) -> Cow<[u8]> {
         Cow::Borrowed(self.as_bytes())
     }
+
+    const FIXED_SIZE: Option<usize> = Some(20);
 }
 
-impl FromDatabaseValue for Address {
-    fn copy_from_database(bytes: &[u8]) -> io::Result<Self>
+impl FromDatabaseBytes for Address {
+    fn from_key_bytes(bytes: &[u8]) -> Self
     where
         Self: Sized,
     {
-        Ok(bytes.into())
+        bytes.into()
     }
 }
 

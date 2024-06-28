@@ -5,7 +5,7 @@ use nimiq_block::Block;
 use nimiq_blockchain::{BlockProducer, Blockchain, BlockchainConfig};
 use nimiq_blockchain_interface::{AbstractBlockchain, PushResult};
 use nimiq_bls::KeyPair as BlsKeyPair;
-use nimiq_database::volatile::VolatileDatabase;
+use nimiq_database::mdbx::{DatabaseConfig, MdbxDatabase};
 use nimiq_genesis::NetworkId;
 use nimiq_keys::KeyPair;
 use nimiq_network_libp2p::Network;
@@ -21,7 +21,11 @@ use parking_lot::RwLock;
 
 #[test(tokio::test)]
 async fn validator_update() {
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let time = Arc::new(OffsetTime::new());
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
@@ -80,7 +84,11 @@ async fn validator_update() {
 #[test(tokio::test(flavor = "multi_thread"))]
 #[ignore]
 async fn four_validators_can_create_an_epoch() {
-    let env = VolatileDatabase::new(20).expect("Could not open a volatile database");
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .expect("Could not open a volatile database");
 
     let validators =
         build_validators::<Network>(env, &(1u64..=4u64).collect::<Vec<_>>(), &mut None, false)

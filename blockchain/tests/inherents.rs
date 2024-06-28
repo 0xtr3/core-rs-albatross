@@ -8,7 +8,10 @@ use nimiq_block::{
 use nimiq_blockchain::{Blockchain, BlockchainConfig};
 use nimiq_blockchain_interface::AbstractBlockchain;
 use nimiq_bls::AggregateSignature;
-use nimiq_database::{traits::WriteTransaction, volatile::VolatileDatabase};
+use nimiq_database::{
+    mdbx::{DatabaseConfig, MdbxDatabase},
+    traits::WriteTransaction,
+};
 use nimiq_hash::{Blake2bHash, Blake2sHash, Hash, HashOutput};
 use nimiq_keys::Address;
 use nimiq_primitives::{
@@ -31,7 +34,11 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 #[test]
 fn it_can_create_batch_finalization_inherents() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(
         Blockchain::new(
             env,
@@ -185,7 +192,11 @@ fn it_can_create_batch_finalization_inherents() {
 fn it_can_penalize_delayed_batch() {
     let genesis_block_number = Policy::genesis_block_number();
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(
         Blockchain::new(
             env,

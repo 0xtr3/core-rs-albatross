@@ -1,19 +1,21 @@
-use super::{ReadTransaction, WriteTransaction};
-use crate::TableFlags;
+use super::{DupTable, ReadTransaction, RegularTable, WriteTransaction};
 
 /// A database handle that can hold multiple tables.
 pub trait Database: Sized {
-    type Table;
-    type ReadTransaction<'db>: ReadTransaction<'db, Table = Self::Table>
+    type ReadTransaction<'db>: ReadTransaction<'db>
     where
         Self: 'db;
-    type WriteTransaction<'db>: WriteTransaction<'db, Table = Self::Table>
+    type WriteTransaction<'db>: WriteTransaction<'db>
     where
         Self: 'db;
 
-    fn open_table(&self, name: String) -> Self::Table;
-    fn open_table_with_flags(&self, name: String, flags: TableFlags) -> Self::Table;
+    /// Creates a regular table (no-duplicates).
+    fn create_regular_table<T: RegularTable>(&self, table: &T);
+
+    /// Creates a regular table (no-duplicates).
+    fn create_dup_table<T: DupTable>(&self, table: &T);
+
     fn read_transaction(&self) -> Self::ReadTransaction<'_>;
+
     fn write_transaction(&self) -> Self::WriteTransaction<'_>;
-    fn close(self) {}
 }

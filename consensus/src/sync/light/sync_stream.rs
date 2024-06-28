@@ -457,7 +457,10 @@ mod tests {
     use nimiq_blockchain::{BlockProducer, Blockchain, BlockchainConfig};
     use nimiq_blockchain_interface::{AbstractBlockchain, PushResult};
     use nimiq_blockchain_proxy::BlockchainProxy;
-    use nimiq_database::{traits::WriteTransaction, volatile::VolatileDatabase};
+    use nimiq_database::{
+        mdbx::{DatabaseConfig, MdbxDatabase},
+        traits::WriteTransaction,
+    };
     use nimiq_light_blockchain::LightBlockchain;
     use nimiq_network_interface::{network::Network, request::request_handler};
     use nimiq_network_mock::{MockHub, MockNetwork};
@@ -474,7 +477,11 @@ mod tests {
 
     fn blockchain() -> BlockchainProxy {
         let time = Arc::new(OffsetTime::new());
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         BlockchainProxy::Full(Arc::new(RwLock::new(
             Blockchain::new(
                 env,

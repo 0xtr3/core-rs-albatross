@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use nimiq_account::{punished_slots::PunishedSlots, *};
 use nimiq_bls::KeyPair as BlsKeyPair;
 use nimiq_collections::BitSet;
-use nimiq_database::{traits::Database, volatile::VolatileDatabase};
+use nimiq_database::{
+    mdbx::{DatabaseConfig, MdbxDatabase},
+    traits::Database,
+};
 use nimiq_hash::Blake2bHash;
 use nimiq_keys::Address;
 use nimiq_primitives::{
@@ -184,7 +187,11 @@ fn can_get_validator() {
 
 #[test]
 fn create_validator_works() {
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let block_state = BlockState::new(1, 1);
@@ -1062,7 +1069,11 @@ fn delete_validator_works() {
 
 #[test]
 fn reward_inherents_not_allowed() {
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let block_state = BlockState::new(2, 2);
@@ -1092,7 +1103,11 @@ fn reward_inherents_not_allowed() {
 #[test]
 fn jail_inherents_work() {
     let genesis_block_number = Policy::genesis_block_number();
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let block_state = BlockState::new(2 + genesis_block_number, 2);
@@ -1298,7 +1313,11 @@ fn jail_inherents_work() {
 
 #[test]
 fn finalize_batch_inherents_works() {
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let block_state = BlockState::new(
@@ -1365,7 +1384,11 @@ fn finalize_batch_inherents_works() {
 
 #[test]
 fn finalize_epoch_inherents_works() {
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let block_state = BlockState::new(
@@ -1673,7 +1696,11 @@ fn jail_and_revert() {
     let block_state = BlockState::new(block_number, 1000);
 
     // 1. Create staking contract with validator
-    let env = VolatileDatabase::new(10).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let mut db_txn = env.write_transaction();
@@ -1779,7 +1806,11 @@ fn jail_inactive_and_revert() {
     let block_state = BlockState::new(block_number, 1000);
 
     // 1. Create staking contract with validator
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let mut db_txn = env.write_transaction();
@@ -2083,7 +2114,11 @@ fn penalize_and_revert_twice() {
     let block_state = BlockState::new(block_number, 1000);
 
     // 1. Create staking contract with validator
-    let env = VolatileDatabase::new(10).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let mut db_txn = env.write_transaction();
@@ -2252,7 +2287,11 @@ fn penalize_inactive_and_revert() {
     let block_state = BlockState::new(block_number, 1000);
 
     // 1. Create staking contract with validator
-    let env = VolatileDatabase::new(10).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let mut db_txn = env.write_transaction();
@@ -2360,7 +2399,11 @@ fn penalize_and_jail_and_revert_twice() {
     let block_state = BlockState::new(block_number, 1000);
 
     // 1. Create staking contract with validator
-    let env = VolatileDatabase::new(10).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let accounts = Accounts::new(env.clone());
     let data_store = accounts.data_store(&Policy::STAKING_CONTRACT_ADDRESS);
     let mut db_txn = env.write_transaction();

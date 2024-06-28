@@ -589,7 +589,7 @@ mod tests {
     use std::sync::Arc;
 
     use nimiq_blockchain::{Blockchain, BlockchainConfig};
-    use nimiq_database::volatile::VolatileDatabase;
+    use nimiq_database::mdbx::{DatabaseConfig, MdbxDatabase};
     use nimiq_hash::Blake2bHash;
     use nimiq_network_interface::network::Network;
     use nimiq_network_mock::{MockHub, MockNetwork, MockPeerId};
@@ -689,7 +689,11 @@ mod tests {
     #[test(tokio::test)]
     async fn it_can_cluster_epoch_ids() {
         let time = Arc::new(OffsetTime::new());
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let blockchain = Arc::new(RwLock::new(
             Blockchain::new(
                 env,
@@ -849,7 +853,11 @@ mod tests {
     #[test(tokio::test)]
     async fn it_can_cluster_checkpoint_ids() {
         let time = Arc::new(OffsetTime::new());
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let blockchain = Arc::new(RwLock::new(
             Blockchain::new(
                 env,
@@ -1137,7 +1145,11 @@ mod tests {
     #[test(tokio::test)]
     async fn it_splits_clusters_correctly() {
         let time = Arc::new(OffsetTime::new());
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let blockchain = Arc::new(RwLock::new(
             Blockchain::new(
                 env,

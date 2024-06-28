@@ -12,7 +12,10 @@ use nimiq_bls::{
     AggregatePublicKey, AggregateSignature, KeyPair as BlsKeyPair, SecretKey as BlsSecretKey,
 };
 use nimiq_collections::BitSet;
-use nimiq_database::{traits::WriteTransaction, volatile::VolatileDatabase};
+use nimiq_database::{
+    mdbx::{DatabaseConfig, MdbxDatabase},
+    traits::WriteTransaction,
+};
 use nimiq_genesis::NetworkId;
 use nimiq_hash::Blake2sHash;
 use nimiq_keys::{KeyPair as SchnorrKeyPair, PrivateKey as SchnorrPrivateKey};
@@ -63,7 +66,11 @@ impl TemporaryBlockProducer {
 
     pub fn new() -> Self {
         let time = Arc::new(OffsetTime::new());
-        let env = VolatileDatabase::new(20).unwrap();
+        let env = MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap();
         let blockchain = Arc::new(RwLock::new(
             Blockchain::new(
                 env,

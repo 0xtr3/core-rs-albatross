@@ -4,7 +4,10 @@ use nimiq_block::{Block, ForkProof, MicroJustification};
 use nimiq_blockchain::{interface::HistoryInterface, BlockProducer, Blockchain, BlockchainConfig};
 use nimiq_blockchain_interface::{AbstractBlockchain, PushResult};
 use nimiq_bls::KeyPair as BlsKeyPair;
-use nimiq_database::{mdbx::MdbxDatabase, traits::WriteTransaction, volatile::VolatileDatabase};
+use nimiq_database::{
+    mdbx::{DatabaseConfig, MdbxDatabase},
+    traits::WriteTransaction,
+};
 use nimiq_genesis::NetworkId;
 use nimiq_hash::{Blake2bHash, Hash};
 use nimiq_keys::{
@@ -40,7 +43,11 @@ const VOLATILE_ENV: bool = true;
 #[test]
 fn it_can_produce_micro_blocks() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -160,7 +167,11 @@ fn it_can_produce_micro_blocks() {
 #[test]
 fn it_can_produce_macro_blocks() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -292,7 +303,11 @@ fn it_can_produce_macro_block_after_punishment() {
 #[test]
 fn it_can_produce_election_blocks() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -331,11 +346,22 @@ fn it_can_produce_election_blocks() {
 fn it_can_produce_a_chain_with_txns() {
     let time = Arc::new(OffsetTime::new());
     let env = if VOLATILE_ENV {
-        VolatileDatabase::new(20).unwrap()
+        MdbxDatabase::new_volatile(DatabaseConfig {
+            max_tables: Some(20),
+            ..Default::default()
+        })
+        .unwrap()
     } else {
         let tmp_dir = tempdir().expect("Could not create temporal directory");
         let tmp_dir = tmp_dir.path().to_str().unwrap();
-        MdbxDatabase::new(tmp_dir, 1024 * 1024 * 1024 * 1024, 21).unwrap()
+        MdbxDatabase::new(
+            tmp_dir,
+            DatabaseConfig {
+                max_tables: Some(20),
+                ..Default::default()
+            },
+        )
+        .unwrap()
     };
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
@@ -378,7 +404,11 @@ fn it_can_produce_a_chain_with_txns() {
 #[test]
 fn it_can_revert_create_staker_transaction() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -484,7 +514,11 @@ fn it_can_revert_create_staker_transaction() {
 #[test]
 fn it_can_revert_failed_transactions() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -634,7 +668,11 @@ fn it_can_revert_failed_transactions() {
 #[test]
 fn it_can_revert_failed_vesting_contract_transaction() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -798,7 +836,11 @@ fn it_can_revert_failed_vesting_contract_transaction() {
 #[test]
 fn it_can_revert_reactivate_transaction() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -903,7 +945,11 @@ fn it_can_revert_reactivate_transaction() {
 #[test]
 fn it_can_consume_all_validator_deposit() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -1115,7 +1161,11 @@ fn it_can_consume_all_validator_deposit() {
 #[test]
 fn it_can_revert_failed_delete_validator() {
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
@@ -1289,7 +1339,11 @@ fn it_can_revert_failed_delete_validator() {
 fn it_can_revert_basic_and_create_contracts_txns() {
     let mut rng = test_rng(false);
     let time = Arc::new(OffsetTime::new());
-    let env = VolatileDatabase::new(20).unwrap();
+    let env = MdbxDatabase::new_volatile(DatabaseConfig {
+        max_tables: Some(20),
+        ..Default::default()
+    })
+    .unwrap();
     let blockchain = Arc::new(RwLock::new(
         Blockchain::new(
             env,
