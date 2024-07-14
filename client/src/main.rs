@@ -1,3 +1,4 @@
+use structopt::StructOpt;
 use std::time::Duration;
 use log::info;
 use nimiq::prover::prover_main;
