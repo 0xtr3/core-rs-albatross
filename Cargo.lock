@@ -3723,10 +3723,10 @@ name = "nimiq-client"
 version = "0.23.0"
 dependencies = [
  "futures-util",
+ "log",
  "nimiq-lib",
  "tokio",
  "tokio-metrics",
- "tracing",
 ]
 
 [[package]]
@@ -6919,6 +6919,7 @@ dependencies = [
  "libc",
  "mio",
  "num_cpus",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",
