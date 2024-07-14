@@ -13,6 +13,12 @@ use nimiq::extras::{
 };
 use tokio_metrics::TaskMonitor;
 
+#[derive(StructOpt, Debug)]
+struct Opt {
+    #[structopt(long)]
+    statistics: Option<u64>,
+}
+
 async fn main_inner(test_interval: Option<u64>) -> Result<(), Error> {
     // Parse command line.
     let command_line = CommandLine::parse();
