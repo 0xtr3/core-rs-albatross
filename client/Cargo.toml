@@ -3,7 +3,7 @@ name = "nimiq-client"
 # version.workspace = true
 # authors.workspace = true
 # license.workspace = true
-# edition.workspace = true
+edition = "2018"
 description = "Nimiq's Rust client"
 # homepage.workspace = true
 # repository.workspace = true
@@ -22,7 +22,7 @@ workspace = true
 
 [dependencies]
 futures = { workspace = true }
-log = "0.4"
+log = {version = "0.4", statistics = 0}
 structopt = "0.3" 
 tokio = { version = "1.38", features = ["full"] }
 tokio-metrics = "0.3"
